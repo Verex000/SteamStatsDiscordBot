@@ -1,0 +1,13 @@
+{
+  "discord": {
+    "token": "NzU4OTM1NDI3NDQzODUxMjY0.X22Lsg.Ug4lmjG2JLK-2PSDg5HSfqEqSAM",
+    "appId": "758935427443851264",
+    "appSecret": "Va7vhxuiIOL81SJzFSzZNXiwAlosbilx",
+    "CommandPrefix": "-"
+  },
+  "steam": {
+    "apiKey": "74E7C9D8B13DEDC97486FAD5380B9C62",
+    "GetUserStatsForGame": "http://api.steampowered.com/ISteamUserStats/GetUserStatsForGame/v0002/?appid=<appId>&key=<key>&steamid=<steamId>",
+    "GetAppList": "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
+  }
+}
