@@ -4,7 +4,9 @@ using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using SteamStatsDiscordBot.Model.JSON.GetAppList;
+using SteamStatsDiscordBot.Model.JSON.GetFriendsList;
 using SteamStatsDiscordBot.Model.JSON.GetIdByUserName;
+using SteamStatsDiscordBot.Model.JSON.GetPlayerSummaries;
 using SteamStatsDiscordBot.Model.JSON.GetUserStatsForGame;
 using System;
 using System.Collections.Generic;
@@ -26,6 +28,8 @@ namespace SteamStatsDiscordBot.Commands
 
         private static readonly HttpClient client = new HttpClient();
 
+        private List<App> apps = null;
+
         private JsonSerializer json = new JsonSerializer();
 
         //Among us app id = 945360
@@ -34,8 +38,8 @@ namespace SteamStatsDiscordBot.Commands
         [Description("Returns the current amount of active players.")]
         public async Task ConcurrentPlayers(CommandContext ctx, [RemainingText] string appid)
         {
-            var msg = await getNumberOfConcurrentPlayers(appid.ToLower());
             await ctx.TriggerTypingAsync();
+            var msg = await getNumberOfConcurrentPlayers(appid.ToLower());
             await ctx.RespondAsync($"{ctx.User.Mention} {msg}");
         }
 
@@ -57,6 +61,25 @@ namespace SteamStatsDiscordBot.Commands
         public async Task Wishlist(CommandContext ctx, string steamId) 
         {
             var msg = await getUserWishlist(steamId);
+        }
+
+        [Command("friends")]
+        [Aliases("f", "fr")]
+        [Description("Returns a list of a player's friendslist")]
+        public async Task Friends(CommandContext ctx, string steamId)
+        {
+            await ctx.TriggerTypingAsync();
+            var msg = await getFriendsList(steamId);
+            if (msg.Equals("Profile is not public, or request has failed.")) 
+            {
+                await ctx.RespondAsync($"{ctx.User.Mention} Profile is not public, or request has failed!");
+            }
+            else
+            {
+                Stream s = new MemoryStream(Encoding.UTF8.GetBytes(msg));
+                await ctx.RespondAsync($"{ctx.User.Mention} Here is the friends list of  {steamId}!");
+                await ctx.RespondWithFileAsync(s, $"{steamId}_friends_list.json");
+            }
         }
 
         private async Task<string> getNumberOfConcurrentPlayers(string appid)
@@ -92,20 +115,23 @@ namespace SteamStatsDiscordBot.Commands
         // GET https://api.steampowered.com/ISteamApps/GetAppList/v2/
         private async Task<string> getIdByName(string appName)
         {
-            client.DefaultRequestHeaders.Accept.Clear();
-            client.DefaultRequestHeaders.Accept.Add(
-                new MediaTypeWithQualityHeaderValue("application/json"));
+            if(apps == null)
+            {
+                client.DefaultRequestHeaders.Accept.Clear();
+                client.DefaultRequestHeaders.Accept.Add(
+                    new MediaTypeWithQualityHeaderValue("application/json"));
 
-            var stringTask = client.GetStringAsync($"https://api.steampowered.com/ISteamApps/GetAppList/v2/");
-            var response = JsonConvert.DeserializeObject<AppListRoot>(await stringTask);
-            var appList = response.appList;
-            var apps = appList.apps;
+                var stringTask = client.GetStringAsync($"https://api.steampowered.com/ISteamApps/GetAppList/v2/");
+                var response = JsonConvert.DeserializeObject<AppListRoot>(await stringTask);
+                apps = response.appList.apps;
+            }
             var one = apps.FirstOrDefault<App>(app => app.name.ToLower() == appName.ToLower());
             if (one == null)
             {
                 return null;
             }
             return one.appId.ToString();
+
         }
 
         private async Task<string> getSteamIdByName(string steamUserName)
@@ -167,13 +193,15 @@ namespace SteamStatsDiscordBot.Commands
             }
             catch (Exception ex)
             {
-                return "Profile is set to private, or request has failed.";
+                return "Profile is not public, or request has failed.";
             }
         }
 
         public async Task<string> getUserWishlist(string steamId)
         {
+            List<Tuple<string, DateTime>> gameDateList = new List<Tuple<string, DateTime>>();
             var url = "https://store.steampowered.com/wishlist/profiles/<steamId>/wishlistdata/";
+
             url = url.Replace("<steamId>", steamId);
             client.DefaultRequestHeaders.Accept.Clear();
             client.DefaultRequestHeaders.Accept.Add(
@@ -183,11 +211,89 @@ namespace SteamStatsDiscordBot.Commands
             {
                 var res = await stringTask;
                 var jObj = JObject.Parse(res);
+                foreach (var x in jObj)
+                {
+                    var appId = x.Key;
+                    JToken info = x.Value;
+                    var name = (string)info["name"];
+                    var dateTimeOffset = DateTimeOffset.FromUnixTimeSeconds((long)info["added"]);
+                    var dateAdded = dateTimeOffset.DateTime;
+                    gameDateList.Add(new Tuple<string, DateTime>(name, dateAdded));
+                    
+                }
+                //Dictionary<string, DateTime> dict = new Dictionary<string, DateTime>();
+                gameDateList.Sort((a, b) => a.Item2.CompareTo(b.Item2));
+                IEnumerable<Tuple<string, DateTime>> mostRecent = gameDateList.TakeLast(10).Reverse();
                 return "";
             }
             catch (Exception ex)
             {
                 return ex.Message;
+            }
+        }
+
+        // EXAMPLE: http://api.steampowered.com/ISteamUser/GetFriendList/v0001/?key=74E7C9D8B13DEDC97486FAD5380B9C62&steamid=76561198190382628&relationship=friend
+        public async Task<string> getFriendsList(string steamId)
+        {
+            if(!steamId.All(char.IsDigit))
+            {
+                steamId = await getSteamIdByName(steamId);
+            }
+            var url = config.GetValue<string>("steam:GetFriendsList");
+            var apiKey = config.GetValue<string>("steam:apiKey");
+            url = url.Replace("<key>", apiKey);
+            url = url.Replace("<steamId>", steamId);
+
+            client.DefaultRequestHeaders.Accept.Clear();
+            client.DefaultRequestHeaders.Accept.Add(
+                new MediaTypeWithQualityHeaderValue("application/json"));
+            var stringTask = client.GetStringAsync(url);
+            try
+            {
+                var res = JsonConvert.DeserializeObject<FriendsListRoot>(await stringTask);
+                var friendsList = res.friendsList.friends;
+                List<Object> objList = new List<object>();
+                List<string> steamFriendsIdList = new List<string>();
+
+                friendsList.ForEach((friend) => {
+                    steamFriendsIdList.Add(friend.steamId);
+                });
+
+                var playerList = await getPlayerSummary(steamFriendsIdList);
+
+                playerList.ForEach((player) => {
+                    var obj = new { id = player.steamId, name = player.personaName };
+                    objList.Add(obj);
+                });
+
+                return JsonConvert.SerializeObject(objList, Formatting.Indented);
+            }
+            catch (Exception ex)
+            {
+                return "Profile is not public, or request has failed.";
+            }
+        }
+
+        // EXAMPLE: http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key=74E7C9D8B13DEDC97486FAD5380B9C62&steamids=76561198190382628
+        public async Task<List<Player>> getPlayerSummary(List<string> steamIds) 
+        {
+            var url = config.GetValue<string>("steam:GetPlayerSummaries");
+            var apiKey = config.GetValue<string>("steam:apiKey");
+            url = url.Replace("<key>", apiKey);
+            steamIds.ForEach((id) => { url += (id + ","); });
+            client.DefaultRequestHeaders.Accept.Clear();
+            client.DefaultRequestHeaders.Accept.Add(
+                new MediaTypeWithQualityHeaderValue("application/json"));
+            var stringTask = client.GetStringAsync(url);
+            try
+            {
+                var res = JsonConvert.DeserializeObject<SummaryRoot>(await stringTask);
+                var playerList = res.summary.playerList;
+                return playerList;
+            }
+            catch (Exception ex)
+            {
+                return null;
             }
         }
     }
